@@ -1,0 +1,85 @@
+# ═══════════════════════════════════════════════════════════════════
+#  clang-tidy configuration — Async Task Engine
+# ═══════════════════════════════════════════════════════════════════
+#
+#  WHY these checks:
+#    • bugprone-*         — catches common C++ mistakes
+#    • cppcoreguidelines-*— C++ Core Guidelines compliance
+#    • modernize-*        — flag pre-C++17/20/23 patterns
+#    • performance-*      — unnecessary copies, moves, allocations
+#    • readability-*      — naming, braces, redundant code
+#    • concurrency-*      — threading mistakes
+#
+#  Disabled checks (and why):
+#    • modernize-use-trailing-return-type — style preference, too noisy
+#    • readability-magic-numbers — we use numeric constants in benchmarks
+#    • cppcoreguidelines-avoid-magic-numbers — same as above
+#    • cppcoreguidelines-pro-type-reinterpret-cast — needed for low-level code
+#    • modernize-use-nodiscard — too aggressive on internal helpers
+#    • bugprone-easily-swappable-parameters — too many false positives
+#    • readability-convert-member-functions-to-static — coroutine awaitables
+#      (await_ready, initial_suspend) cannot be static per the standard
+#    • cppcoreguidelines-avoid-const-or-ref-data-members — reference members
+#      are intentional in awaitable types and pipeline builder
+#    • readability-braces-around-statements — one-liner early returns are
+#      idiomatic and improve readability in guard clauses
+#    • cppcoreguidelines-special-member-functions — many types intentionally
+#      omit destructors when defaults are correct
+#    • cppcoreguidelines-pro-type-const-cast — required for std::priority_queue
+#      top() which returns const ref; no alternative exists
+#    • cppcoreguidelines-pro-type-vararg — fprintf used in logger sink
+#    • modernize-use-std-print — std::println not available in all toolchains
+#    • performance-enum-size — int-sized enums are fine for clarity
+#    • readability-named-parameter — coroutine_handle<> params unused by design
+#    • readability-implicit-bool-conversion — pointer truthiness is idiomatic C++
+#    • readability-redundant-member-init — explicit init improves readability
+
+Checks: >
+  -*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  concurrency-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -modernize-use-nodiscard,
+  -bugprone-easily-swappable-parameters,
+  -readability-identifier-length,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -readability-convert-member-functions-to-static,
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -readability-braces-around-statements,
+  -cppcoreguidelines-special-member-functions,
+  -cppcoreguidelines-pro-type-const-cast,
+  -cppcoreguidelines-pro-type-vararg,
+  -modernize-use-std-print,
+  -performance-enum-size,
+  -readability-named-parameter,
+  -readability-implicit-bool-conversion,
+  -readability-redundant-member-init
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: 'include/ate/.*\.hpp'
+
+CheckOptions:
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: 'k'
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'std::stop_token'

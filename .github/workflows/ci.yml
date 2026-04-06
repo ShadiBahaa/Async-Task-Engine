@@ -1,0 +1,249 @@
+# ═══════════════════════════════════════════════════════════════════
+#  CI/CD Pipeline — Async Task Engine
+# ═══════════════════════════════════════════════════════════════════
+#
+#  Matrix:
+#    ┌─────────────────┬─────────────────────────────────────────┐
+#    │  Job            │  Purpose                                │
+#    ├─────────────────┼─────────────────────────────────────────┤
+#    │  build          │  GCC-13, Debug + Release                │
+#    │  sanitizers     │  TSan / ASan / UBSan (parallel matrix)  │
+#    │  stress         │  Heavy concurrency tests (long timeout) │
+#    │  static-analysis│  clang-tidy on all source files         │
+#    │  benchmark      │  Release build, run + regression check  │
+#    └─────────────────┴─────────────────────────────────────────┘
+#
+#  WHY these choices:
+#    • Ubuntu 24.04 — ships GCC 13, matches our dev environment
+#    • Matrix for sanitizers — each needs a separate build (flags
+#      are incompatible: TSan can't run with ASan)
+#    • Benchmarks run in Release — Debug perf numbers are meaningless
+#    • Benchmark results uploaded as artifacts for historical analysis
+#    • ctest --output-on-failure — immediate visibility into what broke
+
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+# Cancel redundant runs on the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─── Build & Test ────────────────────────────────────────────────
+jobs:
+  build:
+    name: Build & Test (${{ matrix.build_type }})
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [ Debug, Release ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-13 \
+            cmake \
+            ninja-build \
+            libboost-all-dev \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 60
+
+  # ─── Sanitizers ──────────────────────────────────────────────────
+  sanitizers:
+    name: Sanitizer (${{ matrix.sanitizer }})
+    runs-on: ubuntu-24.04
+    needs: build   # Only run if basic build passes
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: tsan
+            label: ThreadSanitizer
+            cxx_flags: "-fsanitize=thread -g"
+            linker_flags: "-fsanitize=thread"
+          - sanitizer: asan
+            label: AddressSanitizer
+            cxx_flags: "-fsanitize=address -fno-omit-frame-pointer -g"
+            linker_flags: "-fsanitize=address"
+          - sanitizer: ubsan
+            label: UndefinedBehaviorSanitizer
+            cxx_flags: "-fsanitize=undefined -fno-omit-frame-pointer -g"
+            linker_flags: "-fsanitize=undefined"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-13 \
+            cmake \
+            ninja-build \
+            libboost-all-dev \
+            libgtest-dev
+
+      - name: Configure (${{ matrix.label }})
+        run: |
+          cmake -B build-${{ matrix.sanitizer }} \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.linker_flags }}"
+
+      - name: Build
+        run: cmake --build build-${{ matrix.sanitizer }}
+
+      - name: Test under ${{ matrix.label }}
+        env:
+          # TSan: fail on any warning (default is to warn only)
+          TSAN_OPTIONS: "halt_on_error=1 history_size=5"
+          # ASan: detect leaks; stack traces on error
+          ASAN_OPTIONS: "detect_leaks=1 halt_on_error=1"
+          # UBSan: print stack traces and halt
+          UBSAN_OPTIONS: "print_stacktrace=1 halt_on_error=1"
+        run: ctest --test-dir build-${{ matrix.sanitizer }} --output-on-failure --timeout 120
+
+  # ─── Stress Tests ────────────────────────────────────────────────
+  stress:
+    name: Stress Tests
+    runs-on: ubuntu-24.04
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-13 \
+            cmake \
+            ninja-build \
+            libboost-all-dev \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build stress tests
+        run: cmake --build build --target stress_pool stress_queue
+
+      - name: Run stress tests
+        run: ctest --test-dir build -R Stress --output-on-failure --timeout 300
+
+  # ─── Benchmarks ──────────────────────────────────────────────────
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-24.04
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-13 \
+            cmake \
+            ninja-build \
+            libboost-all-dev \
+            libgtest-dev
+
+      - name: Configure (Release)
+        run: |
+          cmake -B build-release \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-release
+
+      - name: Run benchmarks
+        run: |
+          echo "=== Queue Benchmark ===" | tee benchmark_results.txt
+          ./build-release/bench_queue 2>&1 | tee -a benchmark_results.txt
+          echo "" >> benchmark_results.txt
+          echo "=== Engine Benchmark ===" | tee -a benchmark_results.txt
+          ./build-release/bench_engine 2>&1 | tee -a benchmark_results.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark_results.txt
+          retention-days: 90
+
+      - name: Regression check (queue speedup gate)
+        run: |
+          # Extract the 1P/1C lock-free speedup value
+          # Expected format: "  1P/1C (250K ops)       43.6         4.9        8.89x"
+          SPEEDUP=$(grep '1P/1C' benchmark_results.txt | awk '{print $NF}' | tr -d 'x')
+          echo "Lock-free speedup: ${SPEEDUP}x"
+          # Fail if speedup dropped below 1.5x (regression gate)
+          python3 -c "import sys; s=float('${SPEEDUP}'); print(f'Speedup: {s}x'); sys.exit(1 if s < 1.5 else 0)"
+
+  # ─── Static Analysis ─────────────────────────────────────────────
+  static-analysis:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-13 \
+            clang-tidy \
+            cmake \
+            ninja-build \
+            libboost-all-dev \
+            libgtest-dev
+
+      - name: Configure (generate compile_commands.json)
+        run: |
+          cmake -B build \
+            -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Run clang-tidy
+        run: |
+          # Run clang-tidy on all project source files (not tests/benchmarks)
+          find src include -name '*.cpp' -o -name '*.hpp' | \
+            xargs clang-tidy -p build --warnings-as-errors='*' 2>&1
